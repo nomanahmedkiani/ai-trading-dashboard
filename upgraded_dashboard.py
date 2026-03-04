@@ -76,34 +76,43 @@ def technical_score(symbol):
 def finbert_sentiment(text):
     API_URL = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
     headers = {"Authorization": f"Bearer {HF_KEY}"}
-    response = requests.post(API_URL, headers=headers, json={"inputs": text})
-    result = response.json()
 
-    if isinstance(result, list):
-        scores = result[0]
-        for item in scores:
-            if item["label"] == "positive":
-                return 50 + item["score"] * 50
-            if item["label"] == "negative":
-                return 50 - item["score"] * 50
-    return 50
+    try:
+        response = requests.post(
+            API_URL,
+            headers=headers,
+            json={"inputs": text},
+            timeout=15
+        )
 
-def news_sentiment(pair):
-    base = pair[:3]
-    url = f"https://newsapi.org/v2/everything?q={base}&language=en&apiKey={NEWS_KEY}"
-    r = requests.get(url).json()
+        result = response.json()
 
-    if "articles" not in r or len(r["articles"]) == 0:
-        return 50, ["No recent financial news"]
+        # If API returns error
+        if isinstance(result, dict) and "error" in result:
+            return 50
 
-    articles = r["articles"][:3]
-    headlines = [a["title"] for a in articles]
+        # If result is proper list format
+        if isinstance(result, list):
+            if isinstance(result[0], list):
+                scores = result[0]
+            else:
+                scores = result
 
-    combined = " ".join(headlines)
-    score = finbert_sentiment(combined)
+            positive = 0
+            negative = 0
 
-    return max(1, min(100, int(score))), headlines
+            for item in scores:
+                if item["label"].lower() == "positive":
+                    positive = item["score"]
+                if item["label"].lower() == "negative":
+                    negative = item["score"]
 
+            return int(50 + (positive - negative) * 50)
+
+        return 50
+
+    except Exception:
+        return 50
 # ----------------------------
 # USD STRENGTH PROXY
 # ----------------------------
