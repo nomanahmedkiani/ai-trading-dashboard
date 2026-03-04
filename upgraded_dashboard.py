@@ -138,14 +138,35 @@ def get_time_series_tf(symbol: str, interval: str):
 
 def get_tf_structure(symbol: str, interval: str) -> str:
     df = get_time_series_tf(symbol, interval)
-    if df is None or len(df) < 40:  # Need enough data for stable EMA34
+
+    if df is None or len(df) < 60:
         return "Neutral (insufficient data)"
-    closes = df["close"]
-    ema34 = closes.ewm(span=34, adjust=False).mean().iloc[-1]
-    last_close = closes.iloc[-1]
-    if pd.isna(ema34) or abs(last_close - ema34) < 0.0001 * last_close:  # Very flat = neutral
-        return "Neutral"
-    return "Bullish" if last_close > ema34 else "Bearish"
+
+    df["high"] = df["high"].astype(float)
+    df["low"] = df["low"].astype(float)
+
+    # Detect swing highs/lows
+    df["prev_high"] = df["high"].shift(1)
+    df["prev_low"] = df["low"].shift(1)
+
+    # Recent 20-candle structure
+    recent = df.tail(20)
+
+    higher_highs = (recent["high"] > recent["prev_high"]).sum()
+    lower_highs = (recent["high"] < recent["prev_high"]).sum()
+
+    higher_lows = (recent["low"] > recent["prev_low"]).sum()
+    lower_lows = (recent["low"] < recent["prev_low"]).sum()
+
+    bullish_score = higher_highs + higher_lows
+    bearish_score = lower_highs + lower_lows
+
+    if bullish_score > bearish_score * 1.2:
+        return "Bullish Structure (HH / HL)"
+    elif bearish_score > bullish_score * 1.2:
+        return "Bearish Structure (LH / LL)"
+    else:
+        return "Sideways / Range"
 
 # ========================= HELPER FUNCTIONS (unchanged) =========================
 def generate_ai_overview(score, pair, mood):
