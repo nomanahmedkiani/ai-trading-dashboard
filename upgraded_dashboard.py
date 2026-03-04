@@ -2,43 +2,36 @@ import streamlit as st
 import requests
 import pandas as pd
 import numpy as np
+import xml.etree.ElementTree as ET
 
 st.set_page_config(layout="wide")
 
-# ==============================
-# API KEYS
-# ==============================
 TWELVE_KEY = st.secrets["TWELVE_DATA_API_KEY"]
-NEWS_KEY = st.secrets["NEWS_API_KEY"]
 HF_KEY = st.secrets["HUGGINGFACE_API_KEY"]
 
 pairs = {
-    "EURUSD": "EUR/USD",
-    "USDJPY": "USD/JPY",
-    "GBPUSD": "GBP/USD",
-    "EURJPY": "EUR/JPY",
-    "XAUUSD": "XAU/USD",
-    "EURGBP": "EUR/GBP"
+    "EURUSD": ["EUR/USD", ["EUR", "USD", "ECB", "Fed", "Euro", "Dollar"]],
+    "USDJPY": ["USD/JPY", ["USD", "JPY", "BOJ", "Fed", "Dollar", "Yen"]],
+    "GBPUSD": ["GBP/USD", ["GBP", "USD", "BOE", "Fed", "Pound", "Dollar"]],
+    "XAUUSD": ["XAU/USD", ["Gold", "USD", "Dollar", "Treasury", "Fed"]],
 }
 
-# ==============================
-# SAFE PRICE FETCH
-# ==============================
+# =========================
+# PRICE
+# =========================
 def get_price(symbol):
     try:
         url = f"https://api.twelvedata.com/price?symbol={symbol}&apikey={TWELVE_KEY}"
         r = requests.get(url, timeout=10).json()
-
         if "price" in r:
             return float(r["price"])
         return None
     except:
         return None
 
-
-# ==============================
-# TECHNICAL ENGINE
-# ==============================
+# =========================
+# TECHNICAL
+# =========================
 def technical_score(symbol):
     try:
         url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=1h&outputsize=200&apikey={TWELVE_KEY}"
@@ -54,13 +47,6 @@ def technical_score(symbol):
         ema50 = df["close"].ewm(span=50).mean().iloc[-1]
         ema200 = df["close"].ewm(span=200).mean().iloc[-1]
 
-        delta = df["close"].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        rs = gain.rolling(14).mean() / loss.rolling(14).mean()
-        rsi = 100 - (100 / (1 + rs))
-        rsi_now = rsi.iloc[-1]
-
         score = 50
         reasons = []
 
@@ -71,171 +57,123 @@ def technical_score(symbol):
             score -= 20
             reasons.append("EMA50 below EMA200 (Downtrend)")
 
-        if rsi_now < 30:
-            score += 15
-            reasons.append("RSI oversold")
-        elif rsi_now > 70:
-            score -= 15
-            reasons.append("RSI overbought")
-
         return max(1, min(100, int(score))), reasons
 
     except:
         return 50, ["Technical calculation error"]
 
-
-# ==============================
-# SAFE FINBERT
-# ==============================
-def finbert_sentiment(text):
+# =========================
+# FINBERT
+# =========================
+def finbert(text):
     try:
         API_URL = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
         headers = {"Authorization": f"Bearer {HF_KEY}"}
-
-        response = requests.post(
-            API_URL,
-            headers=headers,
-            json={"inputs": text},
-            timeout=15
-        )
-
+        response = requests.post(API_URL, headers=headers, json={"inputs": text}, timeout=15)
         result = response.json()
 
-        if isinstance(result, dict) and "error" in result:
-            return 50
-
         if isinstance(result, list):
-            if isinstance(result[0], list):
-                scores = result[0]
-            else:
-                scores = result
-
-            positive = 0
-            negative = 0
-
-            for item in scores:
-                label = item["label"].lower()
-                if label == "positive":
-                    positive = item["score"]
-                if label == "negative":
-                    negative = item["score"]
-
-            return int(50 + (positive - negative) * 50)
+            scores = result[0]
+            pos = 0
+            neg = 0
+            for s in scores:
+                if s["label"] == "positive":
+                    pos = s["score"]
+                if s["label"] == "negative":
+                    neg = s["score"]
+            return int(50 + (pos - neg) * 50)
 
         return 50
-
     except:
         return 50
 
+# =========================
+# RSS NEWS ENGINE
+# =========================
+def get_rss_headlines():
+    feeds = [
+        "https://feeds.reuters.com/reuters/businessNews",
+        "https://www.fxstreet.com/rss/news",
+        "https://www.marketwatch.com/rss/topstories"
+    ]
 
-# ==============================
-# SAFE NEWS
-# ==============================
-def news_sentiment(pair):
-    try:
-        base = pair[:3]
-        url = f"https://newsapi.org/v2/everything?q={base}&language=en&apiKey={NEWS_KEY}"
-        r = requests.get(url, timeout=10).json()
+    headlines = []
 
-        if not isinstance(r, dict):
-            return 50, ["News API invalid response"]
+    for feed in feeds:
+        try:
+            r = requests.get(feed, timeout=10)
+            root = ET.fromstring(r.content)
 
-        if r.get("status") != "ok":
-            return 50, [f"News API error"]
-
-        articles = r.get("articles", [])
-
-        if not articles:
-            return 50, ["No recent financial news"]
-
-        headlines = []
-        for a in articles[:3]:
-            title = a.get("title")
-            if title:
+            for item in root.findall(".//item")[:10]:
+                title = item.find("title").text
                 headlines.append(title)
+        except:
+            continue
 
-        if not headlines:
-            return 50, ["Headlines unavailable"]
+    return headlines
 
-        combined_text = " ".join(headlines)
-        score = finbert_sentiment(combined_text)
+def news_analysis(keywords):
+    try:
+        all_headlines = get_rss_headlines()
+        filtered = []
 
-        return int(score), headlines
+        for h in all_headlines:
+            for k in keywords:
+                if k.lower() in h.lower():
+                    filtered.append(h)
+                    break
+
+        if not filtered:
+            return 50, ["No relevant financial news"]
+
+        combined = " ".join(filtered[:5])
+        score = finbert(combined)
+
+        return score, filtered[:5]
 
     except:
         return 50, ["News processing error"]
 
-
-# ==============================
-# SIMPLE USD MACRO PROXY
-# ==============================
-def usd_macro_bias():
-    try:
-        url = f"https://api.twelvedata.com/price?symbol=EUR/USD&apikey={TWELVE_KEY}"
-        r = requests.get(url).json()
-
-        if "price" not in r:
-            return 50
-
-        price = float(r["price"])
-
-        if price < 1.08:
-            return 60
-        else:
-            return 40
-
-    except:
-        return 50
-
-
-# ==============================
+# =========================
 # FINAL ENGINE
-# ==============================
-def analyze(pair, symbol):
+# =========================
+def analyze(pair_name, symbol, keywords):
     price = get_price(symbol)
-    tech_score, tech_reasons = technical_score(symbol)
-    news_score, headlines = news_sentiment(pair)
-    macro = usd_macro_bias()
+    tech_score, tech_reason = technical_score(symbol)
+    news_score, headlines = news_analysis(keywords)
 
-    final_score = int(
-        (0.45 * tech_score) +
-        (0.35 * news_score) +
-        (0.20 * macro)
-    )
+    final = int((0.6 * tech_score) + (0.4 * news_score))
+    final = max(1, min(100, final))
 
-    final_score = max(1, min(100, final_score))
-
-    if final_score > 55:
+    if final > 55:
         direction = "Bullish"
-    elif final_score < 45:
+    elif final < 45:
         direction = "Bearish"
     else:
         direction = "Neutral"
 
-    if final_score > 70 or final_score < 30:
+    risk = "Medium"
+    if final > 70 or final < 30:
         risk = "High"
-    elif 45 <= final_score <= 55:
-        risk = "Low"
-    else:
-        risk = "Medium"
 
-    reasons = tech_reasons + headlines
+    reasons = tech_reason + headlines
 
-    return price, final_score, direction, risk, reasons
+    return price, final, direction, risk, reasons
 
-
-# ==============================
+# =========================
 # UI
-# ==============================
-st.title("Professional AI Forex Intelligence Terminal")
+# =========================
+st.title("AI Forex Intelligence Terminal")
 
-cols = st.columns(3)
+cols = st.columns(2)
 i = 0
 
-for pair, symbol in pairs.items():
-    with cols[i % 3]:
+for pair, data in pairs.items():
+    symbol = data[0]
+    keywords = data[1]
 
-        price, score, direction, risk, reasons = analyze(pair, symbol)
+    with cols[i % 2]:
+        price, score, direction, risk, reasons = analyze(pair, symbol, keywords)
 
         st.subheader(pair)
 
@@ -247,12 +185,10 @@ for pair, symbol in pairs.items():
         st.write(f"Direction: **{direction} ({score}%)**")
         st.progress(score)
 
-        if risk == "Low":
-            st.success(f"Risk: {risk}")
-        elif risk == "Medium":
-            st.warning(f"Risk: {risk}")
-        else:
+        if risk == "High":
             st.error(f"Risk: {risk}")
+        else:
+            st.warning(f"Risk: {risk}")
 
         st.markdown("**Drivers:**")
         for r in reasons:
