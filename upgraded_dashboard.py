@@ -46,143 +46,48 @@ ALL_PAIRS = {
     "EURNZD": ["EUR/NZD", ["EUR", "NZD", "ECB", "RBNZ"]],
 }
 
-# ========================= REAL-TIME AI ENGINE =========================
-@st.cache_data(ttl=180)
-def get_pair_news(symbol: str):
-    try:
-        r = requests.get(f"https://api.twelvedata.com/news?symbol={symbol}&limit=15&language=en&apikey={TWELVE_KEY}", timeout=12).json()
-        news = []
-        for item in r.get("data", [])[:12]:
-            title = item.get("title", "")
-            desc = item.get("description", "")[:300]
-            if title:
-                news.append(title + ". " + desc)
-        return news
-    except:
-        return []
+# ... [Keep all your previous functions: get_pair_news, get_rss_headlines, finbert, get_high_impact_events, generate_ai_overview, generate_positioning, get_flow_status, get_technical_bias, get_price] exactly as they were ...
 
-@st.cache_data(ttl=240)
-def get_rss_headlines():
-    feeds = [
-        "https://www.investing.com/rss/news_1.rss",
-        "https://www.fxstreet.com/rss/news",
-        "https://feeds.reuters.com/reuters/businessNews",
-        "https://feeds.feedburner.com/forexlive"
-    ]
-    headlines = []
-    for feed in feeds:
-        try:
-            r = requests.get(feed, timeout=10)
-            root = ET.fromstring(r.content)
-            for item in root.findall(".//item")[:20]:
-                if title := item.find("title"):
-                    headlines.append(title.text.strip())
-        except:
-            continue
-    return headlines
-
-def finbert(text: str) -> int:
-    try:
-        API_URL = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
-        headers = {"Authorization": f"Bearer {HF_KEY}"}
-        result = requests.post(API_URL, headers=headers, json={"inputs": text[:1400]}, timeout=18).json()
-        if isinstance(result, list) and result:
-            scores = result[0]
-            pos = next((s["score"] for s in scores if s["label"] == "positive"), 0)
-            neg = next((s["score"] for s in scores if s["label"] == "negative"), 0)
-            return int(50 + (pos - neg) * 105)
-        return 50
-    except:
-        return 50
-
-@st.cache_data(ttl=300)
-def get_high_impact_events():
-    try:
-        r = requests.get("https://nfs.faireconomy.media/ff_calendar_thisweek.xml", timeout=10)
-        root = ET.fromstring(r.content)
-        events = []
-        for ev in root.findall(".//event"):
-            if ev.find("impact") is not None and "high" in (ev.find("impact").text or "").lower():
-                events.append((ev.find("currency").text or "", ev.find("title").text or ""))
-        return events
-    except:
-        return []
-
-@st.cache_data(ttl=300)
-def get_dxy_bias():
-    try:
-        r = requests.get(f"https://api.twelvedata.com/price?symbol=DXY&apikey={TWELVE_KEY}", timeout=8).json()
-        price = float(r.get("price", 0))
-        return "RISK-OFF" if price > 102.5 else "RISK-ON"
-    except:
-        return "RISK-OFF"
-
-# ========================= IMPROVED MARKET STRUCTURE =========================
+# ========================= IMPROVED MARKET STRUCTURE (THIS IS THE FIXED PART) =========================
 @st.cache_data(ttl=180)
 def get_time_series_tf(symbol: str, interval: str):
     try:
-        # Larger size for reliable EMA on weekly/daily
+        # Max allowed size + longer timeout for weekly/daily
         r = requests.get(
-            f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=200&apikey={TWELVE_KEY}",
-            timeout=15
+            f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=500&apikey={TWELVE_KEY}",
+            timeout=20
         ).json()
-        if "values" not in r or len(r["values"]) < 50:
+        if "values" not in r or len(r["values"]) < 30:
             return None
         df = pd.DataFrame(r["values"])
         df["datetime"] = pd.to_datetime(df["datetime"])
         df = df.sort_values("datetime").reset_index(drop=True)
         df["close"] = df["close"].astype(float)
         return df
-    except Exception as e:
+    except:
         return None
 
 def get_tf_structure(symbol: str, interval: str) -> str:
     df = get_time_series_tf(symbol, interval)
-    if df is None or len(df) < 40:  # Need enough data for stable EMA34
-        return "Neutral (insufficient data)"
+    if df is None or len(df) < 20:
+        return "Neutral (low data)"
+    
     closes = df["close"]
-    ema34 = closes.ewm(span=34, adjust=False).mean().iloc[-1]
+    # Use adaptive span: full 34 if enough data, shorter if limited
+    span = 34 if len(df) >= 60 else max(12, len(df) // 2)
+    ema = closes.ewm(span=span, adjust=False).mean().iloc[-1]
     last_close = closes.iloc[-1]
-    if pd.isna(ema34) or abs(last_close - ema34) < 0.0001 * last_close:  # Very flat = neutral
+    
+    if pd.isna(ema):
         return "Neutral"
-    return "Bullish" if last_close > ema34 else "Bearish"
+    
+    diff_pct = abs(last_close - ema) / last_close * 100
+    if diff_pct < 0.05:  # Very flat = neutral
+        return "Neutral"
+    
+    return "Bullish" if last_close > ema else "Bearish"
 
-# ========================= HELPER FUNCTIONS (unchanged) =========================
-def generate_ai_overview(score, pair, mood):
-    if score >= 68:
-        return f"Strong bullish conviction on {pair}. Risk appetite returning — central bank dovishness, positive economic surprises and safe-haven unwinding driving flows into the base currency."
-    elif score <= 35:
-        return f"Clear bearish dominance on {pair}. {mood} sentiment prevails — geopolitical tensions, strong safe-haven demand and risk aversion punishing risk-sensitive currencies."
-    else:
-        return f"Mixed but cautious bias on {pair}. Traders remain on the sidelines ahead of key data releases and central bank commentary."
-
-def generate_positioning(score):
-    if score >= 68:
-        return "Risk-on dominance. Funds rotating into higher-yielding / growth currencies. Traders punishing underperforming shorts lacking immediate returns."
-    elif score <= 35:
-        return "Risk-off dominance. Use of funds under the microscope — traders punishing longs that do not offer immediate cash returns or defensive characteristics."
-    else:
-        return "Balanced / neutral positioning. Investors cautious — seeking safer assets until clearer directional catalyst emerges."
-
-def get_flow_status(score):
-    if score >= 68: return "HEALTHY FLOW"
-    elif score <= 35: return "CHOPPY DOWN TREND"
-    else: return "NORMAL PARTICIPATION"
-
-def get_technical_bias(score):
-    if score >= 68: return "Buy"
-    elif score <= 35: return "Sell"
-    else: return "Hold"
-
-@st.cache_data(ttl=90)
-def get_price(symbol: str):
-    try:
-        r = requests.get(f"https://api.twelvedata.com/price?symbol={symbol}&apikey={TWELVE_KEY}", timeout=10).json()
-        return float(r.get("price", 0)) if "price" in r else None
-    except:
-        return None
-
-# ========================= ANALYSIS FUNCTION =========================
+# ========================= ANALYSIS FUNCTION (unchanged except structure call) =========================
 def analyze_pair(pair_name: str, symbol: str, keywords: list):
     price = get_price(symbol)
     news = get_pair_news(symbol) + get_rss_headlines()
@@ -213,8 +118,8 @@ def analyze_pair(pair_name: str, symbol: str, keywords: list):
     
     return price, direction, confidence, mood, ai_overview, positioning, flow_status, tech_bias, reasons, weekly, daily, h4
 
-# ========================= UI =========================
-current_mood = get_dxy_bias()  # Safe call
+# ========================= UI (unchanged) =========================
+current_mood = get_dxy_bias()
 
 st.title("🚀 AI Forex Intelligence Terminal")
 st.caption(
