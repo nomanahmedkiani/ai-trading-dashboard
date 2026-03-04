@@ -116,37 +116,26 @@ def get_dxy_bias():
     except:
         return "RISK-OFF"
 
-def generate_ai_overview(score, pair, mood):
-    if score >= 68:
-        return f"Strong bullish conviction on {pair}. Risk appetite returning — central bank dovishness, positive economic surprises and safe-haven unwinding driving flows into the base currency."
-    elif score <= 35:
-        return f"Clear bearish dominance on {pair}. {mood} sentiment prevails — geopolitical tensions, strong safe-haven demand and risk aversion punishing risk-sensitive currencies."
-    else:
-        return f"Mixed but cautious bias on {pair}. Traders remain on the sidelines ahead of key data releases and central bank commentary. Direction likely to be decided by next major catalyst."
+# ========================= MARKET STRUCTURE (NEW FEATURE) =========================
+@st.cache_data(ttl=180)
+def get_time_series_tf(symbol: str, interval: str, size: int = 50):
+    try:
+        r = requests.get(f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize={size}&apikey={TWELVE_KEY}", timeout=10).json()
+        if "values" not in r: return None
+        df = pd.DataFrame(r["values"])
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df = df.sort_values("datetime").reset_index(drop=True)
+        df["close"] = df["close"].astype(float)
+        return df
+    except:
+        return None
 
-def generate_positioning(score):
-    if score >= 68:
-        return "Risk-on dominance. Funds rotating into higher-yielding / growth currencies. Traders punishing underperforming shorts lacking immediate returns."
-    elif score <= 35:
-        return "Risk-off dominance. Use of funds under the microscope — traders punishing longs that do not offer immediate cash returns or defensive characteristics."
-    else:
-        return "Balanced / neutral positioning. Investors cautious — seeking safer assets until clearer directional catalyst emerges."
-
-def get_flow_status(score):
-    if score >= 68:
-        return "HEALTHY FLOW"
-    elif score <= 35:
-        return "CHOPPY DOWN TREND"
-    else:
-        return "NORMAL PARTICIPATION"
-
-def get_technical_bias(score):
-    if score >= 68:
-        return "Buy"
-    elif score <= 35:
-        return "Sell"
-    else:
-        return "Hold"
+def get_tf_structure(symbol: str, interval: str) -> str:
+    df = get_time_series_tf(symbol, interval)
+    if df is None or len(df) < 20:
+        return "Neutral"
+    ema34 = df["close"].ewm(span=34).mean().iloc[-1]
+    return "Bullish" if df["close"].iloc[-1] > ema34 else "Bearish"
 
 # ========================= ANALYSIS =========================
 def analyze_pair(pair_name: str, symbol: str, keywords: list):
@@ -171,9 +160,41 @@ def analyze_pair(pair_name: str, symbol: str, keywords: list):
     positioning = generate_positioning(final_score)
     flow_status = get_flow_status(final_score)
     tech_bias = get_technical_bias(final_score)
+    
+    # NEW: Market Structure for Weekly, Daily, 4H
+    weekly_structure = get_tf_structure(symbol, "1week")
+    daily_structure = get_tf_structure(symbol, "1day")
+    h4_structure = get_tf_structure(symbol, "4h")
+    
     reasons = filtered[:6] if filtered else ["Limited real-time news flow – awaiting next major catalyst"]
     
-    return price, direction, confidence, mood, ai_overview, positioning, flow_status, tech_bias, reasons
+    return price, direction, confidence, mood, ai_overview, positioning, flow_status, tech_bias, reasons, weekly_structure, daily_structure, h4_structure
+
+def generate_ai_overview(score, pair, mood):
+    if score >= 68:
+        return f"Strong bullish conviction on {pair}. Risk appetite returning — central bank dovishness, positive economic surprises and safe-haven unwinding driving flows into the base currency."
+    elif score <= 35:
+        return f"Clear bearish dominance on {pair}. {mood} sentiment prevails — geopolitical tensions, strong safe-haven demand and risk aversion punishing risk-sensitive currencies."
+    else:
+        return f"Mixed but cautious bias on {pair}. Traders remain on the sidelines ahead of key data releases and central bank commentary."
+
+def generate_positioning(score):
+    if score >= 68:
+        return "Risk-on dominance. Funds rotating into higher-yielding / growth currencies. Traders punishing underperforming shorts lacking immediate returns."
+    elif score <= 35:
+        return "Risk-off dominance. Use of funds under the microscope — traders punishing longs that do not offer immediate cash returns or defensive characteristics."
+    else:
+        return "Balanced / neutral positioning. Investors cautious — seeking safer assets until clearer directional catalyst emerges."
+
+def get_flow_status(score):
+    if score >= 68: return "HEALTHY FLOW"
+    elif score <= 35: return "CHOPPY DOWN TREND"
+    else: return "NORMAL PARTICIPATION"
+
+def get_technical_bias(score):
+    if score >= 68: return "Buy"
+    elif score <= 35: return "Sell"
+    else: return "Hold"
 
 @st.cache_data(ttl=90)
 def get_price(symbol: str):
@@ -207,7 +228,7 @@ col_idx = 0
 
 for pair in st.session_state.watchlist:
     symbol, keywords = ALL_PAIRS[pair]
-    price, direction, confidence, mood, ai_overview, positioning, flow_status, tech_bias, reasons = analyze_pair(pair, symbol, keywords)
+    price, direction, confidence, mood, ai_overview, positioning, flow_status, tech_bias, reasons, weekly, daily, h4 = analyze_pair(pair, symbol, keywords)
     
     with cols[col_idx % len(cols)]:
         st.markdown("<div style='background:#1f2937;padding:22px;border-radius:16px;margin:8px;box-shadow:0 4px 15px rgba(0,0,0,0.3);'>", unsafe_allow_html=True)
@@ -216,7 +237,7 @@ for pair in st.session_state.watchlist:
         if price:
             st.metric("Live Price", f"{price:.5f}")
         
-        # Main status row – matches your screenshot style
+        # Main status row
         c1, c2, c3 = st.columns(3)
         with c1:
             color = "#ef4444" if direction == "Bearish" else "#22c55e"
@@ -227,11 +248,14 @@ for pair in st.session_state.watchlist:
         with c3:
             st.markdown(f"<div style='text-align:center;'><strong>AI Confidence</strong><br><span style='color:#00ff9d;font-size:30px;font-weight:bold'>{confidence}%</span></div>", unsafe_allow_html=True)
         
-        # Market Mood & Flow
-        mood_color = "orange" if mood == "RISK-OFF" else "lime"
-        st.markdown(f"**Market Mood**: <span style='color:{mood_color};font-weight:bold'>{mood}</span> • **Flow**: <span style='font-weight:bold'>{flow_status}</span>", unsafe_allow_html=True)
+        st.markdown(f"**Market Mood**: <span style='color:orange;font-weight:bold'>{mood}</span> • **Flow**: <span style='font-weight:bold'>{flow_status}</span>", unsafe_allow_html=True)
         
-        # Expanders
+        # NEW FEATURE: Market Structure (Weekly / Daily / 4H)
+        with st.expander("📈 Market Structure", expanded=False):
+            st.write(f"**Weekly**: **{weekly}**")
+            st.write(f"**Daily**: **{daily}**")
+            st.write(f"**4H**: **{h4}**")
+        
         with st.expander("📊 AI Overview", expanded=True):
             st.write(ai_overview)
         with st.expander("Investor Positioning"):
