@@ -117,36 +117,37 @@ def get_dxy_bias():
     except:
         return "RISK-OFF"
 
-# ========================= MARKET STRUCTURE =========================
+# ========================= IMPROVED MARKET STRUCTURE =========================
 @st.cache_data(ttl=180)
 def get_time_series_tf(symbol: str, interval: str):
     try:
+        # Larger size for reliable EMA on weekly/daily
         r = requests.get(
-            f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=80&apikey={TWELVE_KEY}",
-            timeout=12
+            f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=200&apikey={TWELVE_KEY}",
+            timeout=15
         ).json()
-        if "values" not in r:
+        if "values" not in r or len(r["values"]) < 50:
             return None
         df = pd.DataFrame(r["values"])
         df["datetime"] = pd.to_datetime(df["datetime"])
         df = df.sort_values("datetime").reset_index(drop=True)
         df["close"] = df["close"].astype(float)
         return df
-    except:
+    except Exception as e:
         return None
 
 def get_tf_structure(symbol: str, interval: str) -> str:
     df = get_time_series_tf(symbol, interval)
-    if df is None or len(df) < 15:
-        return "Neutral"
+    if df is None or len(df) < 40:  # Need enough data for stable EMA34
+        return "Neutral (insufficient data)"
     closes = df["close"]
     ema34 = closes.ewm(span=34, adjust=False).mean().iloc[-1]
     last_close = closes.iloc[-1]
-    if pd.isna(ema34):
+    if pd.isna(ema34) or abs(last_close - ema34) < 0.0001 * last_close:  # Very flat = neutral
         return "Neutral"
     return "Bullish" if last_close > ema34 else "Bearish"
 
-# ========================= HELPER FUNCTIONS =========================
+# ========================= HELPER FUNCTIONS (unchanged) =========================
 def generate_ai_overview(score, pair, mood):
     if score >= 68:
         return f"Strong bullish conviction on {pair}. Risk appetite returning — central bank dovishness, positive economic surprises and safe-haven unwinding driving flows into the base currency."
@@ -212,8 +213,8 @@ def analyze_pair(pair_name: str, symbol: str, keywords: list):
     
     return price, direction, confidence, mood, ai_overview, positioning, flow_status, tech_bias, reasons, weekly, daily, h4
 
-# ========================= UI STARTS HERE =========================
-current_mood = get_dxy_bias()  # ← This fixes the NameError
+# ========================= UI =========================
+current_mood = get_dxy_bias()  # Safe call
 
 st.title("🚀 AI Forex Intelligence Terminal")
 st.caption(
@@ -254,7 +255,6 @@ for pair in st.session_state.watchlist:
         if price:
             st.metric("Live Price", f"{price:.5f}")
         
-        # Main status row
         c1, c2, c3 = st.columns(3)
         with c1:
             color = "#ef4444" if direction == "Bearish" else "#22c55e"
@@ -267,7 +267,6 @@ for pair in st.session_state.watchlist:
         
         st.markdown(f"**Market Mood**: <span style='color:orange;font-weight:bold'>{mood}</span> • **Flow**: <span style='font-weight:bold'>{flow_status}</span>", unsafe_allow_html=True)
         
-        # Market Structure
         with st.expander("📈 Market Structure", expanded=False):
             st.write(f"**Weekly**: **{weekly}**")
             st.write(f"**Daily**: **{daily}**")
