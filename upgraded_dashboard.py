@@ -118,7 +118,59 @@ def get_dxy_bias():
         return "RISK-OFF"
 
 # ========================= IMPROVED MARKET STRUCTURE =========================
+@st.cache_data(ttl=180)
+def get_time_series_tf(symbol: str, interval: str):
+    try:
+        # Larger size for reliable EMA on weekly/daily
+        r = requests.get(
+            f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=200&apikey={TWELVE_KEY}",
+            timeout=15
+        ).json()
+        if "values" not in r or len(r["values"]) < 50:
+            return None
+        df = pd.DataFrame(r["values"])
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df = df.sort_values("datetime").reset_index(drop=True)
+        df["close"] = df["close"].astype(float)
+        return df
+    except Exception as e:
+        return None
 
+def get_tf_structure(symbol: str, interval: str) -> str:
+    df = get_time_series_tf(symbol, interval)
+
+    if df is None or len(df) < 80:
+        return "Neutral (insufficient data)"
+
+    df["close"] = df["close"].astype(float)
+
+    # Use last 50 candles for structure
+    recent = df.tail(50).copy()
+
+    # Create rolling highs/lows (swing approximation)
+    recent["rolling_high"] = recent["close"].rolling(5).max()
+    recent["rolling_low"] = recent["close"].rolling(5).min()
+
+    # Detect break of previous structure
+    last_close = recent["close"].iloc[-1]
+    prev_high = recent["rolling_high"].iloc[-6]
+    prev_low = recent["rolling_low"].iloc[-6]
+
+    if last_close > prev_high:
+        return "Bullish Structure (Break of High)"
+    elif last_close < prev_low:
+        return "Bearish Structure (Break of Low)"
+    else:
+        # Trend bias filter
+        sma20 = recent["close"].rolling(20).mean().iloc[-1]
+        sma50 = recent["close"].rolling(50).mean().iloc[-1]
+
+        if sma20 > sma50:
+            return "Bullish Structure (Trend Holding)"
+        elif sma20 < sma50:
+            return "Bearish Structure (Trend Holding)"
+        else:
+            return "Sideways / Compression"
 
 # ========================= HELPER FUNCTIONS (unchanged) =========================
 def generate_ai_overview(score, pair, mood):
