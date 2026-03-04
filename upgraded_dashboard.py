@@ -39,16 +39,15 @@ ALL_PAIRS = {
 @st.cache_data(ttl=90)
 def get_price(symbol: str):
     try:
-        url = f"https://api.twelvedata.com/price?symbol={symbol}&apikey={TWELVE_KEY}"
-        r = requests.get(url, timeout=10).json()
+        r = requests.get(f"https://api.twelvedata.com/price?symbol={symbol}&apikey={TWELVE_KEY}", timeout=10).json()
         return float(r.get("price", 0)) if "price" in r else None
     except:
         return None
 
 @st.cache_data(ttl=180)
-def get_time_series(symbol: str):
+def get_time_series_tf(symbol: str, interval: str, size: int = 60):
     try:
-        url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=1h&outputsize=60&apikey={TWELVE_KEY}"
+        url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize={size}&apikey={TWELVE_KEY}"
         r = requests.get(url, timeout=10).json()
         if "values" not in r:
             return None
@@ -62,8 +61,7 @@ def get_time_series(symbol: str):
 
 def calculate_technical_score(df):
     if df is None or len(df) < 15:
-        return 50, ["⚠️ Technical data unavailable (rate limit)"]
-    
+        return 50, ["⚠️ Technical data limited"]
     closes = df["close"]
     ema12 = closes.ewm(span=12).mean().iloc[-1]
     ema26 = closes.ewm(span=26).mean().iloc[-1]
@@ -71,41 +69,24 @@ def calculate_technical_score(df):
     
     score = 50
     reasons = []
-    
-    # EMA Trend
     if ema12 > ema26:
         score += 25
-        reasons.append("EMA12 > EMA26 → Bullish trend")
+        reasons.append("EMA12 > EMA26 → Bullish")
     else:
         score -= 25
-        reasons.append("EMA12 < EMA26 → Bearish trend")
+        reasons.append("EMA12 < EMA26 → Bearish")
     
-    # RSI
-    if rsi > 70:
-        score -= 12
-        reasons.append(f"RSI {rsi:.1f} → Overbought")
-    elif rsi < 30:
-        score += 12
-        reasons.append(f"RSI {rsi:.1f} → Oversold")
-    else:
-        reasons.append(f"RSI {rsi:.1f} → Neutral")
+    if rsi > 70: score -= 12; reasons.append(f"RSI {rsi:.1f} Overbought")
+    elif rsi < 30: score += 12; reasons.append(f"RSI {rsi:.1f} Oversold")
+    else: reasons.append(f"RSI {rsi:.1f} Neutral")
     
-    # Momentum (last 5 candles)
-    momentum = (closes.iloc[-1] / closes.iloc[-6] - 1) * 100 if len(closes) >= 6 else 0
-    if momentum > 0.3:
-        score += 8
-        reasons.append(f"Momentum +{momentum:.2f}%")
-    elif momentum < -0.3:
-        score -= 8
-        reasons.append(f"Momentum {momentum:.2f}%")
-    
-    return max(10, min(90, int(score))), reasons
+    return max(15, min(85, int(score))), reasons
 
 def calculate_rsi(prices, period=14):
     try:
         delta = prices.diff()
-        gain = delta.where(delta > 0, 0).rolling(window=period, min_periods=1).mean()
-        loss = -delta.where(delta < 0, 0).rolling(window=period, min_periods=1).mean()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
         rs = gain / loss
         return float(100 - (100 / (1 + rs)).iloc[-1])
     except:
@@ -113,7 +94,6 @@ def calculate_rsi(prices, period=14):
 
 @st.cache_data(ttl=300)
 def get_rss_headlines():
-    # (same 4 feeds as before)
     feeds = ["https://feeds.reuters.com/reuters/businessNews", "https://www.fxstreet.com/rss/news",
              "https://www.marketwatch.com/rss/topstories", "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"]
     headlines = []
@@ -122,20 +102,18 @@ def get_rss_headlines():
             r = requests.get(feed, timeout=10)
             root = ET.fromstring(r.content)
             for item in root.findall(".//item")[:15]:
-                title = item.find("title").text
-                if title: headlines.append(title.strip())
+                if (title := item.find("title").text):
+                    headlines.append(title.strip())
         except:
             continue
     return headlines
 
 def finbert(text):
-    # (same as before)
     try:
         API_URL = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
         headers = {"Authorization": f"Bearer {HF_KEY}"}
-        response = requests.post(API_URL, headers=headers, json={"inputs": text}, timeout=15)
-        result = response.json()
-        if isinstance(result, list) and len(result) > 0:
+        result = requests.post(API_URL, headers=headers, json={"inputs": text}, timeout=15).json()
+        if isinstance(result, list) and result:
             scores = result[0]
             pos = next((s["score"] for s in scores if s["label"] == "positive"), 0)
             neg = next((s["score"] for s in scores if s["label"] == "negative"), 0)
@@ -149,31 +127,57 @@ def news_analysis(keywords):
     all_headlines = get_rss_headlines()
     filtered = [h for h in all_headlines if any(k.lower() in h.lower() for k in keywords)]
     if not filtered:
-        return 50, ["No specific news found (neutral)"]
-    combined = " | ".join(filtered[:6])
-    score = finbert(combined)
+        return 50, ["No specific news"]
+    score = finbert(" | ".join(filtered[:6]))
     return score, filtered[:6]
+
+# ========================= NEW: MULTI-TIMEFRAME RISK MANAGEMENT =========================
+@st.cache_data(ttl=600)  # 10 min cache
+def get_tf_trend(symbol: str, interval: str) -> str:
+    df = get_time_series_tf(symbol, interval, size=40)
+    if df is None or len(df) < 20:
+        return "Neutral"
+    ema50 = df["close"].ewm(span=50).mean().iloc[-1]
+    return "Bullish" if df["close"].iloc[-1] > ema50 else "Bearish"
 
 # ========================= CORE ANALYSIS =========================
 def analyze_pair(pair_name: str, symbol: str, keywords: list):
     price = get_price(symbol)
-    df = get_time_series(symbol)
+    df_1h = get_time_series_tf(symbol, "1h", 60)
     
-    tech_score, tech_reasons = calculate_technical_score(df)
+    tech_score, tech_reasons = calculate_technical_score(df_1h)
     news_score, headlines = news_analysis(keywords)
     
     final_score = int(0.65 * tech_score + 0.35 * news_score)
-    final_score = max(10, min(90, final_score))
+    final_score = max(15, min(85, final_score))
     
     direction = "Bullish" if final_score >= 68 else "Bearish" if final_score <= 38 else "Neutral"
-    risk = "High" if final_score >= 80 or final_score <= 20 else "Medium"
+    
+    # === RISK MANAGEMENT LOGIC ===
+    weekly_trend = get_tf_trend(symbol, "1week")
+    daily_trend = get_tf_trend(symbol, "1day")
+    h4_trend = get_tf_trend(symbol, "4h")
+    
+    tf_trends = [weekly_trend, daily_trend, h4_trend]
+    aligned_count = sum(1 for t in tf_trends if t == direction)
+    
+    if aligned_count == 3:
+        risk_percent = 3.0
+        risk_color = "🟢"
+    elif aligned_count == 2:
+        risk_percent = 1.5
+        risk_color = "🟡"
+    else:
+        risk_percent = 0.5
+        risk_color = "🔴"
     
     reasons = tech_reasons + headlines
-    return price, final_score, direction, risk, reasons, df, tech_score, news_score
+    return (price, final_score, direction, risk_percent, aligned_count, risk_color, 
+            reasons, df_1h, weekly_trend, daily_trend, h4_trend)
 
 # ========================= UI =========================
 st.title("🚀 AI Forex Intelligence Terminal")
-st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC • Free APIs")
+st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC • With Risk Management")
 
 if st.button("🔄 Refresh All Data", type="primary"):
     st.cache_data.clear()
@@ -181,19 +185,15 @@ if st.button("🔄 Refresh All Data", type="primary"):
 
 # ====================== SIDEBAR WATCHLIST ======================
 st.sidebar.header("📋 Your Watchlist")
-st.sidebar.caption("Search & select pairs to show on dashboard")
-
-# Default selection (only 5 to avoid rate limit on first load)
-default_pairs = ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD", "GBPJPY"]
+st.sidebar.caption("Search & select (max 6 for speed)")
 
 if "watchlist" not in st.session_state:
-    st.session_state.watchlist = default_pairs
+    st.session_state.watchlist = ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD", "GBPJPY"]
 
 selected = st.sidebar.multiselect(
-    "Active Pairs (searchable)",
+    "Active Pairs",
     options=list(ALL_PAIRS.keys()),
-    default=st.session_state.watchlist,
-    help="Search by typing (e.g. EUR, Gold, JPY)"
+    default=st.session_state.watchlist
 )
 
 if selected != st.session_state.watchlist:
@@ -201,56 +201,44 @@ if selected != st.session_state.watchlist:
     st.rerun()
 
 st.sidebar.divider()
-st.sidebar.warning("💡 Free tier tip: Keep ≤8 pairs for instant refresh. Wait 60s between full refreshes.")
+st.sidebar.warning("💡 Keep ≤6 pairs active • Free tier limit: 8 calls/min")
 
-# ====================== MAIN DASHBOARD ======================
+# ====================== DASHBOARD ======================
 cols = st.columns(3)
 col_idx = 0
-all_scores = []
 
 for pair in st.session_state.watchlist:
     symbol, keywords = ALL_PAIRS[pair]
-    price, score, direction, risk, reasons, df, tech, news = analyze_pair(pair, symbol, keywords)
-    all_scores.append(score)
+    price, score, direction, risk_percent, aligned, risk_color, reasons, df, w, d, h4 = analyze_pair(pair, symbol, keywords)
 
     with cols[col_idx % 3]:
-        st.markdown(f"<div style='background:#1f2937;padding:18px;border-radius:12px;margin:8px;'>", unsafe_allow_html=True)
+        st.markdown(f"<div style='background:#1f2937;padding:20px;border-radius:12px;margin:10px;'>", unsafe_allow_html=True)
         
         st.subheader(f"**{pair}**")
         if price:
             st.metric("Live Price", f"{price:.5f}")
-        else:
-            st.error("Price unavailable")
-
-        dir_color = "#22c55e" if direction == "Bullish" else "#ef4444" if direction == "Bearish" else "#eab308"
-        st.markdown(f"**Direction:** <span style='color:{dir_color};font-weight:bold'>{direction} ({score}%)</span>", unsafe_allow_html=True)
-        
+        st.write(f"**Direction:** {direction} ({score}%)")
         st.progress(score / 100)
-        st.caption(f"**Tech:** {tech}% | **News:** {news}%")
-
-        if risk == "High":
-            st.error(f"⚠️ Risk: {risk}")
-        else:
-            st.warning(f"Risk: {risk}")
-
+        
+        # RISK MANAGEMENT DISPLAY
+        st.markdown(f"**{risk_color} Recommended Risk:** **{risk_percent}%**")
+        st.caption(f"{aligned}/3 timeframes aligned (W/D/4H)")
+        
+        with st.expander("📊 Market Structure", expanded=False):
+            st.write(f"• Weekly: **{w}**")
+            st.write(f"• Daily: **{d}**")
+            st.write(f"• 4H: **{h4}**")
+        
         with st.expander("📋 Key Drivers", expanded=False):
             for r in reasons[:8]:
                 st.write(f"• {r}")
-
-        with st.expander("📊 1H Chart", expanded=False):
+        
+        with st.expander("📈 1H Chart", expanded=False):
             if df is not None:
-                st.line_chart(df.set_index("datetime")["close"], use_container_width=True)
-            else:
-                st.write("Chart unavailable")
-
+                st.line_chart(df.set_index("datetime")["close"])
+        
         st.markdown("</div>", unsafe_allow_html=True)
     
     col_idx += 1
 
-# ====================== OVERALL SENTIMENT ======================
-st.markdown("---")
-avg_score = sum(all_scores) / len(all_scores) if all_scores else 50
-sentiment = "🟢 STRONG BULLISH" if avg_score > 60 else "🔴 STRONG BEARISH" if avg_score < 40 else "⚪ NEUTRAL"
-st.metric("OVERALL MARKET SENTIMENT", f"{avg_score:.1f}%", sentiment)
-
-st.caption("⚠️ Educational tool only — not financial advice. Markets are volatile. Always verify with your own analysis.")
+st.caption("⚠️ Educational tool only • Not financial advice • Always verify manually")
