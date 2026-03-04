@@ -71,10 +71,20 @@ if st.button("🔄 Refresh All Markets", type="primary"):
     st.cache_data.clear()
     st.rerun()
 
-# Sidebar watchlist (same as before, default all 32)
+
+# Sidebar
 st.sidebar.header("🎛️ Watchlist Manager")
+st.sidebar.caption("Search • Add • Remove • All pairs visible by default")
+
 if "watchlist" not in st.session_state:
-    st.session_state.watchlist = list(ALL_PAIRS.keys())[:12]  # start with 12 for speed
+    st.session_state.watchlist = list(ALL_PAIRS.keys())[:12]  # ← move it here
+
+selected = st.sidebar.multiselect(
+    "Pairs on Dashboard",
+    options=list(ALL_PAIRS.keys()),
+    default=st.session_state.watchlist
+)
+
 
 selected = st.sidebar.multiselect("Pairs on Desk", options=list(ALL_PAIRS.keys()), default=st.session_state.watchlist)
 if selected != st.session_state.watchlist:
