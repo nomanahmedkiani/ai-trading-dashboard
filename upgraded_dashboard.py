@@ -7,12 +7,34 @@ from datetime import datetime
 st.set_page_config(page_title="AI Forex Intelligence Terminal", layout="wide", page_icon="📈")
 
 # ========================= SECRETS =========================
+# ========================= SECRETS =========================
 TWELVE_KEY = st.secrets["TWELVE_DATA_API_KEY"]
 HF_KEY = st.secrets["HUGGINGFACE_API_KEY"]
 
 # ========================= 32 PAIRS =========================
-ALL_PAIRS = { ... same as before ... }  # (keep your existing ALL_PAIRS dict unchanged)
+ALL_PAIRS = {
+    # ← PASTE YOUR FULL ORIGINAL DICTIONARY HERE (the one above)
+    # Do NOT leave { ... same as before ... }
+}
 
+# ========================= CURRENCY STRENGTH ENGINE =========================
+CURRENCY_KEYWORDS = {
+    "EUR": ["EUR", "ECB", "Eurozone", "Lagarde", "Frankfurt"],
+    "GBP": ["GBP", "BOE", "Pound", "UK", "Bailey"],
+    "USD": ["USD", "Fed", "Dollar", "Powell", "FOMC", "Treasury"],
+    "JPY": ["JPY", "BOJ", "Yen", "Ueda"],
+    "CAD": ["CAD", "BOC", "Loonie", "Canada"],
+    "AUD": ["AUD", "RBA", "Aussie"],
+    "NZD": ["NZD", "RBNZ", "Kiwi"],
+    "CHF": ["CHF", "SNB", "Franc"],
+    "CNH": ["CNH", "PBOC", "Yuan", "China"],
+    "XAU": ["Gold", "XAU", "bullion", "inflation", "rate cut"],
+    "XAG": ["Silver", "XAG"],
+    "TRY": ["TRY", "Turkey", "Lira", "Erdogan"],
+    "MXN": ["MXN", "Mexico", "Peso", "Banxico"],
+    "ZAR": ["ZAR", "Rand", "South Africa"],
+    "BRL": ["BRL", "Brazil", "Real"],
+}
 # ========================= CURRENCY STRENGTH ENGINE (THE BIG FIX) =========================
 CURRENCY_KEYWORDS = {
     "EUR": ["EUR", "ECB", "Eurozone", "Lagarde", "Frankfurt"],
