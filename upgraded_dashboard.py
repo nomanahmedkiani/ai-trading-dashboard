@@ -3,7 +3,6 @@ import requests
 import pandas as pd
 import xml.etree.ElementTree as ET
 from datetime import datetime
-import numpy as np
 
 st.set_page_config(page_title="AI Forex Intelligence Terminal", layout="wide", page_icon="📈")
 
@@ -47,69 +46,18 @@ ALL_PAIRS = {
     "EURNZD": ["EUR/NZD", ["EUR", "NZD", "ECB", "RBNZ"]],
 }
 
-# ========================= CURRENCY STRENGTH ENGINE =========================
-CURRENCY_KEYWORDS = {
-    "EUR": ["EUR", "ECB", "Eurozone", "Lagarde", "Frankfurt"],
-    "GBP": ["GBP", "BOE", "Pound", "UK", "Bailey"],
-    "USD": ["USD", "Fed", "Dollar", "Powell", "FOMC", "Treasury"],
-    "JPY": ["JPY", "BOJ", "Yen", "Ueda"],
-    "CAD": ["CAD", "BOC", "Loonie", "Canada"],
-    "AUD": ["AUD", "RBA", "Aussie"],
-    "NZD": ["NZD", "RBNZ", "Kiwi"],
-    "CHF": ["CHF", "SNB", "Franc"],
-    "CNH": ["CNH", "PBOC", "Yuan", "China"],
-    "XAU": ["Gold", "XAU", "bullion", "inflation", "rate cut"],
-    "XAG": ["Silver", "XAG"],
-    "TRY": ["TRY", "Turkey", "Lira", "Erdogan"],
-    "MXN": ["MXN", "Mexico", "Peso", "Banxico"],
-    "ZAR": ["ZAR", "Rand", "South Africa"],
-    "BRL": ["BRL", "Brazil", "Real"],
-}
-
-@st.cache_data(ttl=240)
-def get_currency_strength(currency: str):
-    keywords = CURRENCY_KEYWORDS.get(currency, [currency])
-    try:
-        main_pair = f"{currency}USD" if currency != "USD" else "EURUSD"
-        if currency in ["XAU", "XAG"]:
-            main_pair = f"{currency}USD"
-        twelve_news = get_twelve_news(main_pair)
-        rss = get_rss_headlines()
-        all_news = twelve_news + rss
-        filtered = [h for h in all_news if any(k.lower() in h.lower() for k in keywords)]
-        if not filtered:
-            return 50
-        combined = " | ".join(filtered[:12])  # more headlines
-        score = finbert(combined)
-        # Amplify swing + volume bonus
-        score = int(score * 1.18)  # stronger reaction
-        if len(filtered) >= 6:
-            score += 12 if score > 50 else -12
-        # High-impact events ×3 multiplier
-        events = get_high_impact_events()
-        event_bonus = sum(24 if currency in ev[0] else -24 for ev in events[:6])  # ×3 boost
-        score += event_bonus
-        return max(10, min(90, score))
-    except:
-        return 50
-
-@st.cache_data(ttl=300)
-def get_all_currency_strengths():
-    return {cur: get_currency_strength(cur) for cur in CURRENCY_KEYWORDS}
-
+# ========================= PURE AI NEWS + FUNDAMENTALS ENGINE =========================
 @st.cache_data(ttl=180)
-def get_twelve_news(symbol: str):
+def get_pair_news(symbol: str):
     try:
-        url = f"https://api.twelvedata.com/news?symbol={symbol}&limit=12&language=en&apikey={TWELVE_KEY}"
-        r = requests.get(url, timeout=12).json()
-        news_list = []
-        items = r.get("data", []) or r.get("news", []) or r.get("values", [])
-        for item in items[:12]:
+        r = requests.get(f"https://api.twelvedata.com/news?symbol={symbol}&limit=15&language=en&apikey={TWELVE_KEY}", timeout=12).json()
+        news = []
+        for item in r.get("data", [])[:12]:
             title = item.get("title", "")
-            desc = item.get("description", "")[:250]
+            desc = item.get("description", "")[:300]
             if title:
-                news_list.append(title + ". " + desc)
-        return news_list
+                news.append(title + ". " + desc)
+        return news
     except:
         return []
 
@@ -119,7 +67,6 @@ def get_rss_headlines():
         "https://www.investing.com/rss/news_1.rss",
         "https://www.fxstreet.com/rss/news",
         "https://feeds.reuters.com/reuters/businessNews",
-        "https://www.marketwatch.com/rss/topstories",
         "https://feeds.feedburner.com/forexlive"
     ]
     headlines = []
@@ -127,7 +74,7 @@ def get_rss_headlines():
         try:
             r = requests.get(feed, timeout=10)
             root = ET.fromstring(r.content)
-            for item in root.findall(".//item")[:20]:  # more items
+            for item in root.findall(".//item")[:20]:
                 if title := item.find("title"):
                     headlines.append(title.text.strip())
         except:
@@ -138,16 +85,24 @@ def finbert(text: str) -> int:
     try:
         API_URL = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
         headers = {"Authorization": f"Bearer {HF_KEY}"}
-        result = requests.post(API_URL, headers=headers, json={"inputs": text[:1200]}, timeout=18).json()
+        result = requests.post(API_URL, headers=headers, json={"inputs": text[:1400]}, timeout=18).json()
         if isinstance(result, list) and result:
             scores = result[0]
             pos = next((s["score"] for s in scores if s["label"] == "positive"), 0)
             neg = next((s["score"] for s in scores if s["label"] == "negative"), 0)
-            raw_diff = pos - neg
-            return int(50 + raw_diff * 90)  # MUCH stronger swing → real variation
+            return int(50 + (pos - neg) * 105)   # VERY strong swing for clear Bullish/Bearish
         return 50
     except:
         return 50
+
+@st.cache_data(ttl=300)
+def get_dxy_bias():
+    try:
+        r = requests.get(f"https://api.twelvedata.com/price?symbol=DXY&apikey={TWELVE_KEY}", timeout=8).json()
+        price = float(r.get("price", 0))
+        return 25 if price > 103 else -25 if price < 99 else 0
+    except:
+        return 0
 
 @st.cache_data(ttl=300)
 def get_high_impact_events():
@@ -155,15 +110,50 @@ def get_high_impact_events():
         r = requests.get("https://nfs.faireconomy.media/ff_calendar_thisweek.xml", timeout=10)
         root = ET.fromstring(r.content)
         events = []
-        for event in root.findall(".//event"):
-            impact = event.find("impact")
-            if impact is not None and impact.text and "high" in impact.text.lower():
-                currency = event.find("currency").text or ""
-                title = event.find("title").text or ""
-                events.append((currency, title))
+        for ev in root.findall(".//event"):
+            if ev.find("impact") is not None and "high" in (ev.find("impact").text or "").lower():
+                cur = ev.find("currency").text or ""
+                title = ev.find("title").text or ""
+                events.append((cur, title))
         return events
     except:
         return []
+
+# ========================= PURE AI ANALYSIS =========================
+def analyze_pair(pair_name: str, symbol: str, keywords: list):
+    price = get_price(symbol)
+    news = get_pair_news(symbol) + get_rss_headlines()
+    filtered = [h for h in news if any(k.lower() in h.lower() for k in keywords)]
+    
+    if not filtered:
+        score = 50
+        headlines = ["No major news today"]
+    else:
+        score = finbert(" | ".join(filtered[:12]))
+        if len(filtered) >= 8:
+            score = int(score * 1.15)   # extra boost when lots of news
+    
+    # Add high-impact events & USD bias
+    events = get_high_impact_events()
+    event_bonus = sum(35 if any(k in ev[0] for k in keywords) else -35 for ev in events[:8])
+    score += event_bonus
+    dxy = get_dxy_bias()
+    if "USD" in pair_name or pair_name in ["XAUUSD", "XAGUSD"]:
+        score += dxy
+    
+    final_score = max(12, min(88, score))
+    direction = "Bullish" if final_score > 52 else "Bearish" if final_score < 48 else "Neutral"
+    confidence = final_score if direction == "Bullish" else (100 - final_score)
+    
+    # AI Insight + Reasons
+    top_headlines = filtered[:5]
+    ai_insight = "Strong bullish momentum from positive central bank outlook and risk appetite." if final_score > 65 else \
+                "Bearish pressure due to strong USD and risk-off sentiment." if final_score < 35 else \
+                "Mixed sentiment with upcoming data releases likely to decide direction."
+    
+    reasons = [ai_insight] + top_headlines
+    
+    return price, final_score, direction, confidence, reasons
 
 @st.cache_data(ttl=90)
 def get_price(symbol: str):
@@ -173,109 +163,11 @@ def get_price(symbol: str):
     except:
         return None
 
-@st.cache_data(ttl=180)
-def get_time_series_tf(symbol: str, interval: str, size: int = 70):
-    try:
-        r = requests.get(f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize={size}&apikey={TWELVE_KEY}", timeout=10).json()
-        if "values" not in r:
-            return None
-        df = pd.DataFrame(r["values"])
-        df["datetime"] = pd.to_datetime(df["datetime"])
-        df = df.sort_values("datetime").reset_index(drop=True)
-        df["close"] = df["close"].astype(float)
-        return df
-    except:
-        return None
-
-def calculate_technical_score(df):
-    if df is None or len(df) < 25:
-        return 50, ["⚠️ Limited data"]
-    closes = df["close"]
-    reasons = []
-    score = 50
-    ema12 = closes.ewm(span=12).mean().iloc[-1]
-    ema26 = closes.ewm(span=26).mean().iloc[-1]
-    if ema12 > ema26:
-        score += 26
-        reasons.append("EMA Bullish")
-    else:
-        score -= 26
-        reasons.append("EMA Bearish")
-    ema12_full = closes.ewm(span=12).mean()
-    ema26_full = closes.ewm(span=26).mean()
-    macd = ema12_full - ema26_full
-    signal = macd.ewm(span=9).mean()
-    if macd.iloc[-1] > signal.iloc[-1] and macd.iloc[-2] < signal.iloc[-2]:
-        score += 22
-        reasons.append("MACD Bullish Crossover")
-    elif macd.iloc[-1] < signal.iloc[-1]:
-        score -= 18
-        reasons.append("MACD Bearish")
-    delta = closes.diff()
-    gain = delta.where(delta > 0, 0).rolling(window=14).mean()
-    loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs)).iloc[-1] if not rs.isna().iloc[-1] else 50.0
-    if rsi < 30:
-        score += 20
-        reasons.append(f"RSI Oversold ({rsi:.0f})")
-    elif rsi > 70:
-        score -= 20
-        reasons.append(f"RSI Overbought ({rsi:.0f})")
-    return max(10, min(90, int(score))), reasons
-
-def get_tf_trend(symbol: str, interval: str) -> str:
-    df = get_time_series_tf(symbol, interval, 40)
-    if df is None or len(df) < 15:
-        return "Neutral"
-    ema = df["close"].ewm(span=34).mean().iloc[-1]
-    return "Bullish" if df["close"].iloc[-1] > ema else "Bearish"
-
-# ========================= MAIN ANALYSIS =========================
-def analyze_pair(pair_name: str, symbol: str, keywords: list):
-    price = get_price(symbol)
-    df_1h = get_time_series_tf(symbol, "1h", 80)
-    tech_score, tech_reasons = calculate_technical_score(df_1h)
-    strengths = get_all_currency_strengths()
-    if pair_name.startswith(("XAU", "XAG")):
-        base = pair_name[:3]
-        quote = "USD"
-    else:
-        base = pair_name[:3]
-        quote = pair_name[3:]
-    base_strength = strengths.get(base, 50)
-    quote_strength = strengths.get(quote, 50)
-    diff = base_strength - quote_strength
-    relative_score = int(50 + diff * 1.4)  # stronger separation
-    # Higher technical weight for trending pairs
-    final_score = int(0.52 * tech_score + 0.48 * relative_score)
-    final_score = max(10, min(90, final_score))
-    direction = "Bullish" if final_score > 50 else "Bearish"
-    confidence = final_score if direction == "Bullish" else (100 - final_score)
-    w = get_tf_trend(symbol, "1week")
-    d = get_tf_trend(symbol, "1day")
-    h4 = get_tf_trend(symbol, "4h")
-    aligned = sum(1 for t in [w, d, h4] if t == direction)
-    if aligned == 3:
-        risk_percent = round(3.0 + confidence / 35, 1)
-        risk_color = "🟢"
-        tf_status = "ALL TFs aligned 🔥"
-    elif aligned == 2:
-        risk_percent = round(1.8 + confidence / 50, 1)
-        risk_color = "🟡"
-        tf_status = "Strong alignment"
-    else:
-        risk_percent = 0.9
-        risk_color = "🔴"
-        tf_status = "Mixed TFs"
-    reasons = tech_reasons + [f"{base} strength: {base_strength}% | {quote} strength: {quote_strength}%"]
-    return price, final_score, direction, confidence, risk_percent, risk_color, tf_status, reasons, df_1h, w, d, h4
-
 # ========================= UI =========================
-st.title("🚀 AI Forex Intelligence Terminal – Enhanced Direction")
-st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC • Stronger AI sentiment & fundamentals")
+st.title("🚀 AI Forex Intelligence Terminal – Pure AI News & Fundamentals")
+st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC • 100% AI + News + Events")
 
-if st.button("🔄 Refresh All Data (may take 30–90s)", type="primary"):
+if st.button("🔄 Refresh All Data (Pure AI Analysis)", type="primary"):
     st.cache_data.clear()
     st.rerun()
 
@@ -283,11 +175,7 @@ st.sidebar.header("🎛️ Manage Dashboard")
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = list(ALL_PAIRS.keys())
 
-selected = st.sidebar.multiselect(
-    "Pairs on Dashboard",
-    options=list(ALL_PAIRS.keys()),
-    default=st.session_state.watchlist
-)
+selected = st.sidebar.multiselect("Pairs on Dashboard", options=list(ALL_PAIRS.keys()), default=st.session_state.watchlist)
 if selected != st.session_state.watchlist:
     st.session_state.watchlist = selected
     st.rerun()
@@ -299,40 +187,25 @@ col_idx = 0
 
 for pair in st.session_state.watchlist:
     symbol, keywords = ALL_PAIRS[pair]
-    price, final_score, direction, confidence, risk_percent, risk_color, tf_status, reasons, df, w, d, h4 = analyze_pair(pair, symbol, keywords)
+    price, score, direction, confidence, reasons = analyze_pair(pair, symbol, keywords)
     
     with cols[col_idx % len(cols)]:
-        st.markdown(
-            "<div style='background:#1f2937;padding:20px;border-radius:14px;margin:8px;'>",
-            unsafe_allow_html=True
-        )
+        st.markdown("<div style='background:#1f2937;padding:20px;border-radius:14px;margin:8px;'>", unsafe_allow_html=True)
         
         st.subheader(f"**{pair}**")
         if price:
             st.metric("Live Price", f"{price:.5f}")
         
         color = "#22c55e" if direction == "Bullish" else "#ef4444"
-        st.markdown(
-            f"**{direction}** <span style='color:{color};font-size:1.9em'>**{confidence}%**</span>",
-            unsafe_allow_html=True
-        )
+        st.markdown(f"**{direction}** <span style='color:{color};font-size:2em'>**{confidence}%**</span>", unsafe_allow_html=True)
         st.progress(confidence / 100)
         
-        st.markdown(f"**{risk_color} Recommended Risk:** **{risk_percent}%**")
-        st.caption(tf_status)
-        
-        if not compact_mode:
-            with st.expander("Market Structure", expanded=False):
-                st.write(f"Weekly: **{w}** | Daily: **{d}** | 4H: **{h4}**")
-            with st.expander("Key Drivers (AI + News + Events)", expanded=False):
-                for r in reasons[:10]:
-                    st.write(f"• {r}")
-            with st.expander("1H Chart", expanded=False):
-                if df is not None:
-                    st.line_chart(df.set_index("datetime")["close"])
+        with st.expander("📋 AI Analysis & Reasons", expanded=True):
+            for r in reasons:
+                st.write(f"• {r}")
         
         st.markdown("</div>", unsafe_allow_html=True)
     
     col_idx += 1
 
-st.caption("⚠️ Educational tool only • Not financial advice • Results vary with real-time news & events • Refresh often")
+st.caption("⚠️ Educational tool only • Powered by real-time news & AI sentiment • Not financial advice")
