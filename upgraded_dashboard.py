@@ -35,24 +35,7 @@ CURRENCY_KEYWORDS = {
     "ZAR": ["ZAR", "Rand", "South Africa"],
     "BRL": ["BRL", "Brazil", "Real"],
 }
-# ========================= CURRENCY STRENGTH ENGINE (THE BIG FIX) =========================
-CURRENCY_KEYWORDS = {
-    "EUR": ["EUR", "ECB", "Eurozone", "Lagarde", "Frankfurt"],
-    "GBP": ["GBP", "BOE", "Pound", "UK", "Bailey"],
-    "USD": ["USD", "Fed", "Dollar", "Powell", "FOMC", "Treasury"],
-    "JPY": ["JPY", "BOJ", "Yen", "Ueda"],
-    "CAD": ["CAD", "BOC", "Loonie", "Canada"],
-    "AUD": ["AUD", "RBA", "Aussie"],
-    "NZD": ["NZD", "RBNZ", "Kiwi"],
-    "CHF": ["CHF", "SNB", "Franc"],
-    "CNH": ["CNH", "PBOC", "Yuan", "China"],
-    "XAU": ["Gold", "XAU", "bullion", "inflation", "rate cut"],
-    "XAG": ["Silver", "XAG"],
-    "TRY": ["TRY", "Turkey", "Lira", "Erdogan"],
-    "MXN": ["MXN", "Mexico", "Peso", "Banxico"],
-    "ZAR": ["ZAR", "Rand", "South Africa"],
-    "BRL": ["BRL", "Brazil", "Real"],
-}
+
 
 @st.cache_data(ttl=240)
 def get_currency_strength(currency: str):
