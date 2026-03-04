@@ -139,34 +139,38 @@ def get_time_series_tf(symbol: str, interval: str):
 def get_tf_structure(symbol: str, interval: str) -> str:
     df = get_time_series_tf(symbol, interval)
 
-    if df is None or len(df) < 60:
+    if df is None or len(df) < 80:
         return "Neutral (insufficient data)"
 
-    df["high"] = df["high"].astype(float)
-    df["low"] = df["low"].astype(float)
+    df["close"] = df["close"].astype(float)
 
-    # Detect swing highs/lows
-    df["prev_high"] = df["high"].shift(1)
-    df["prev_low"] = df["low"].shift(1)
+    # Use last 50 candles for structure
+    recent = df.tail(50).copy()
 
-    # Recent 20-candle structure
-    recent = df.tail(20)
+    # Create rolling highs/lows (swing approximation)
+    recent["rolling_high"] = recent["close"].rolling(5).max()
+    recent["rolling_low"] = recent["close"].rolling(5).min()
 
-    higher_highs = (recent["high"] > recent["prev_high"]).sum()
-    lower_highs = (recent["high"] < recent["prev_high"]).sum()
+    # Detect break of previous structure
+    last_close = recent["close"].iloc[-1]
+    prev_high = recent["rolling_high"].iloc[-6]
+    prev_low = recent["rolling_low"].iloc[-6]
 
-    higher_lows = (recent["low"] > recent["prev_low"]).sum()
-    lower_lows = (recent["low"] < recent["prev_low"]).sum()
-
-    bullish_score = higher_highs + higher_lows
-    bearish_score = lower_highs + lower_lows
-
-    if bullish_score > bearish_score * 1.2:
-        return "Bullish Structure (HH / HL)"
-    elif bearish_score > bullish_score * 1.2:
-        return "Bearish Structure (LH / LL)"
+    if last_close > prev_high:
+        return "Bullish Structure (Break of High)"
+    elif last_close < prev_low:
+        return "Bearish Structure (Break of Low)"
     else:
-        return "Sideways / Range"
+        # Trend bias filter
+        sma20 = recent["close"].rolling(20).mean().iloc[-1]
+        sma50 = recent["close"].rolling(50).mean().iloc[-1]
+
+        if sma20 > sma50:
+            return "Bullish Structure (Trend Holding)"
+        elif sma20 < sma50:
+            return "Bearish Structure (Trend Holding)"
+        else:
+            return "Sideways / Compression"
 
 # ========================= HELPER FUNCTIONS (unchanged) =========================
 def generate_ai_overview(score, pair, mood):
