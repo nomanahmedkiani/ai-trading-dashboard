@@ -117,62 +117,50 @@ def get_dxy_bias():
     except:
         return "RISK-OFF"
 
-# ========================= IMPROVED MARKET STRUCTURE =========================
+# ========================= FIXED MARKET STRUCTURE (NOW SHOWS REAL BULLISH/BEARISH) =========================
 @st.cache_data(ttl=180)
 def get_time_series_tf(symbol: str, interval: str):
     try:
-        # Larger size for reliable EMA on weekly/daily
         r = requests.get(
-            f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=200&apikey={TWELVE_KEY}",
+            f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=500&apikey={TWELVE_KEY}",
             timeout=15
         ).json()
-        if "values" not in r or len(r["values"]) < 50:
+        if "values" not in r or len(r["values"]) < 40:
             return None
         df = pd.DataFrame(r["values"])
         df["datetime"] = pd.to_datetime(df["datetime"])
         df = df.sort_values("datetime").reset_index(drop=True)
         df["close"] = df["close"].astype(float)
         return df
-    except Exception as e:
+    except:
         return None
 
 def get_tf_structure(symbol: str, interval: str) -> str:
     df = get_time_series_tf(symbol, interval)
-
-    if df is None or len(df) < 80:
-        return "Neutral (insufficient data)"
-
-    df["close"] = df["close"].astype(float)
-
-    # Use last 50 candles for structure
-    recent = df.tail(50).copy()
-
-    # Create rolling highs/lows (swing approximation)
-    recent["rolling_high"] = recent["close"].rolling(5).max()
-    recent["rolling_low"] = recent["close"].rolling(5).min()
-
-    # Detect break of previous structure
-    last_close = recent["close"].iloc[-1]
-    prev_high = recent["rolling_high"].iloc[-6]
-    prev_low = recent["rolling_low"].iloc[-6]
-
-    if last_close > prev_high:
+    if df is None or len(df) < 40:
+        return "Neutral"
+    
+    closes = df["close"]
+    # Use rolling high/low + SMA for clear structure
+    recent = closes.tail(80)
+    rolling_high = recent.rolling(5).max().iloc[-1]
+    rolling_low = recent.rolling(5).min().iloc[-1]
+    last_close = recent.iloc[-1]
+    sma20 = recent.rolling(20).mean().iloc[-1]
+    sma50 = recent.rolling(50).mean().iloc[-1]
+    
+    if last_close > rolling_high:
         return "Bullish Structure (Break of High)"
-    elif last_close < prev_low:
+    elif last_close < rolling_low:
         return "Bearish Structure (Break of Low)"
+    elif sma20 > sma50:
+        return "Bullish Structure (Trend Holding)"
+    elif sma20 < sma50:
+        return "Bearish Structure (Trend Holding)"
     else:
-        # Trend bias filter
-        sma20 = recent["close"].rolling(20).mean().iloc[-1]
-        sma50 = recent["close"].rolling(50).mean().iloc[-1]
+        return "Sideways / Compression"
 
-        if sma20 > sma50:
-            return "Bullish Structure (Trend Holding)"
-        elif sma20 < sma50:
-            return "Bearish Structure (Trend Holding)"
-        else:
-            return "Sideways / Compression"
-
-# ========================= HELPER FUNCTIONS (unchanged) =========================
+# ========================= HELPER FUNCTIONS =========================
 def generate_ai_overview(score, pair, mood):
     if score >= 68:
         return f"Strong bullish conviction on {pair}. Risk appetite returning — central bank dovishness, positive economic surprises and safe-haven unwinding driving flows into the base currency."
@@ -212,34 +200,34 @@ def analyze_pair(pair_name: str, symbol: str, keywords: list):
     price = get_price(symbol)
     news = get_pair_news(symbol) + get_rss_headlines()
     filtered = [h for h in news if any(k.lower() in h.lower() for k in keywords)]
-    
+   
     score = finbert(" | ".join(filtered[:12])) if filtered else 50
     events = get_high_impact_events()
     event_bonus = sum(35 if any(k in ev[0] for k in keywords) else -35 for ev in events[:8])
     score += event_bonus
     if "USD" in pair_name or pair_name.startswith(("XAU","XAG")):
         score += 18 if get_dxy_bias() == "RISK-OFF" else -18
-    
+   
     final_score = max(12, min(88, int(score * 1.12)))
     direction = "Bullish" if final_score > 52 else "Bearish"
     confidence = final_score if direction == "Bullish" else (100 - final_score)
-    
+   
     mood = get_dxy_bias()
     ai_overview = generate_ai_overview(final_score, pair_name, mood)
     positioning = generate_positioning(final_score)
     flow_status = get_flow_status(final_score)
     tech_bias = get_technical_bias(final_score)
-    
+   
     weekly = get_tf_structure(symbol, "1week")
     daily = get_tf_structure(symbol, "1day")
     h4 = get_tf_structure(symbol, "4h")
-    
+   
     reasons = filtered[:6] if filtered else ["Limited real-time news flow – awaiting next major catalyst"]
-    
+   
     return price, direction, confidence, mood, ai_overview, positioning, flow_status, tech_bias, reasons, weekly, daily, h4
 
 # ========================= UI =========================
-current_mood = get_dxy_bias()  # Safe call
+current_mood = get_dxy_bias()
 
 st.title("🚀 AI Forex Intelligence Terminal")
 st.caption(
@@ -272,14 +260,14 @@ col_idx = 0
 for pair in st.session_state.watchlist:
     symbol, keywords = ALL_PAIRS[pair]
     price, direction, confidence, mood, ai_overview, positioning, flow_status, tech_bias, reasons, weekly, daily, h4 = analyze_pair(pair, symbol, keywords)
-    
+   
     with cols[col_idx % len(cols)]:
         st.markdown("<div style='background:#1f2937;padding:22px;border-radius:16px;margin:8px;box-shadow:0 4px 15px rgba(0,0,0,0.3);'>", unsafe_allow_html=True)
-        
+       
         st.subheader(f"**{pair}**")
         if price:
             st.metric("Live Price", f"{price:.5f}")
-        
+       
         c1, c2, c3 = st.columns(3)
         with c1:
             color = "#ef4444" if direction == "Bearish" else "#22c55e"
@@ -289,14 +277,14 @@ for pair in st.session_state.watchlist:
             st.markdown(f"<div style='text-align:center;'><strong>Technical</strong><br><span style='color:{bias_color};font-size:26px;font-weight:bold'>{tech_bias}</span></div>", unsafe_allow_html=True)
         with c3:
             st.markdown(f"<div style='text-align:center;'><strong>AI Confidence</strong><br><span style='color:#00ff9d;font-size:30px;font-weight:bold'>{confidence}%</span></div>", unsafe_allow_html=True)
-        
+       
         st.markdown(f"**Market Mood**: <span style='color:orange;font-weight:bold'>{mood}</span> • **Flow**: <span style='font-weight:bold'>{flow_status}</span>", unsafe_allow_html=True)
-        
+       
         with st.expander("📈 Market Structure", expanded=False):
             st.write(f"**Weekly**: **{weekly}**")
             st.write(f"**Daily**: **{daily}**")
             st.write(f"**4H**: **{h4}**")
-        
+       
         with st.expander("📊 AI Overview", expanded=True):
             st.write(ai_overview)
         with st.expander("Investor Positioning"):
@@ -304,9 +292,9 @@ for pair in st.session_state.watchlist:
         with st.expander("Key Reasons & Headlines"):
             for r in reasons:
                 st.write(f"• {r}")
-        
+       
         st.markdown("</div>", unsafe_allow_html=True)
-    
+   
     col_idx += 1
 
 st.caption("⚠️ Educational tool only • Powered by real-time AI sentiment & fundamentals • Not financial advice")
