@@ -117,7 +117,7 @@ def get_dxy_bias():
     except:
         return "RISK-OFF"
 
-# ========================= FIXED MARKET STRUCTURE (NOW SHOWS REAL BULLISH/BEARISH) =========================
+# ========================= MARKET STRUCTURE =========================
 @st.cache_data(ttl=180)
 def get_time_series_tf(symbol: str, interval: str):
     try:
@@ -141,7 +141,6 @@ def get_tf_structure(symbol: str, interval: str) -> str:
         return "Neutral"
     
     closes = df["close"]
-    # Use rolling high/low + SMA for clear structure
     recent = closes.tail(80)
     rolling_high = recent.rolling(5).max().iloc[-1]
     rolling_low = recent.rolling(5).min().iloc[-1]
@@ -278,6 +277,13 @@ for pair in st.session_state.watchlist:
         with c3:
             st.markdown(f"<div style='text-align:center;'><strong>AI Confidence</strong><br><span style='color:#00ff9d;font-size:30px;font-weight:bold'>{confidence}%</span></div>", unsafe_allow_html=True)
        
+        # NEW: Direction strength bar (green/red)
+        bar_color = "#22c55e" if direction == "Bullish" else "#ef4444"
+        bar_value = confidence if direction == "Bullish" else (100 - confidence)
+        st.markdown(f"<div style='margin-top:8px;'><strong>Direction Strength</strong></div>", unsafe_allow_html=True)
+        st.progress(bar_value / 100)
+        st.markdown(f"<div style='text-align:center; color:{bar_color}; font-weight:bold;'>{bar_value}% {direction}</div>", unsafe_allow_html=True)
+        
         st.markdown(f"**Market Mood**: <span style='color:orange;font-weight:bold'>{mood}</span> • **Flow**: <span style='font-weight:bold'>{flow_status}</span>", unsafe_allow_html=True)
        
         with st.expander("📈 Market Structure", expanded=False):
